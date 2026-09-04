@@ -5,7 +5,7 @@ inference workloads.
 
 ## Included deployment
 
-- `dynamo-multinode-disagg.yaml` — Dynamo 1.4.2 multi-node, disaggregated
+- `dynamo-multinode-disaggregated-inference-kai-grove.yaml` — Dynamo 1.4.2 multi-node, disaggregated
   vLLM deployment using Grove and KAI Scheduler.
 - `dynamo-multinode-disaggregated-inference-kai-grove-deployment.md` —
   deployment, validation, and OpenAI-compatible chat instructions.

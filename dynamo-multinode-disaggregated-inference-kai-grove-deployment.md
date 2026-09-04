@@ -11,7 +11,7 @@ cluster on 2026-09-02. It deploys NVIDIA Dynamo 1.4.2 with:
 - four A10G GPUs total, one GPU per worker pod
 
 The workload manifest is
-[`dynamo-multinode-disagg.yaml`](./dynamo-multinode-disagg.yaml).
+[`dynamo-multinode-disaggregated-inference-kai-grove.yaml`](./dynamo-multinode-disaggregated-inference-kai-grove.yaml).
 
 ## Result
 
@@ -198,7 +198,7 @@ values that conflict with OpenShift namespace-assigned UID ranges. This direct
 DGD defines the topology explicitly.
 
 ```bash
-oc apply -f dynamo-multinode-disagg.yaml
+oc apply -f dynamo-multinode-disaggregated-inference-kai-grove.yaml
 ```
 
 Watch deployment status:
