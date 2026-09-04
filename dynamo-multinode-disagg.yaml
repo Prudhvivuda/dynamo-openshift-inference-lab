@@ -1,0 +1,158 @@
+# NVIDIA Dynamo 1.4.2 multi-node, disaggregated vLLM validation deployment.
+# Each worker pool spans two physical nodes with one GPU per node.  The
+# tensor-parallel size is therefore two for both prefill and decode.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dynamo-multinode-pvuda
+  labels:
+    app.kubernetes.io/part-of: dynamo-multinode-validation
+---
+apiVersion: nvidia.com/v1beta1
+kind: DynamoGraphDeployment
+metadata:
+  name: vllm-disagg-multinode
+  namespace: dynamo-multinode-pvuda
+  annotations:
+    # This queue is created by the Dynamo-managed KAI Scheduler subchart.
+    nvidia.com/kai-scheduler-queue: dynamo
+spec:
+  backendFramework: vllm
+  components:
+    - name: Frontend
+      type: frontend
+      replicas: 1
+      podTemplate:
+        spec:
+          tolerations:
+            - key: g5-gpu
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+          securityContext:
+            fsGroup: 1001330000
+            runAsNonRoot: true
+          containers:
+            - name: main
+              image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.2
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: USER
+                  value: dynamo
+                - name: TORCHINDUCTOR_CACHE_DIR
+                  value: /tmp/torchinductor
+                - name: HF_HOME
+                  value: /tmp/huggingface
+                - name: NCCL_SOCKET_IFNAME
+                  value: eth0
+                - name: NCCL_IB_DISABLE
+                  value: "1"
+              workingDir: /workspace/examples/backends/vllm
+              command: ["python3", "-m", "dynamo.frontend"]
+              args: ["--http-port", "8000"]
+    - name: prefill
+      type: prefill
+      replicas: 1
+      multinode:
+        nodeCount: 2
+      sharedMemorySize: 16Gi
+      podTemplate:
+        spec:
+          tolerations:
+            - key: g5-gpu
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+          securityContext:
+            fsGroup: 1001330000
+            runAsNonRoot: true
+          containers:
+            - name: main
+              image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.2
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: USER
+                  value: dynamo
+                - name: TORCHINDUCTOR_CACHE_DIR
+                  value: /tmp/torchinductor
+                - name: HF_HOME
+                  value: /tmp/huggingface
+                - name: NCCL_SOCKET_IFNAME
+                  value: eth0
+                - name: NCCL_IB_DISABLE
+                  value: "1"
+              workingDir: /workspace/examples/backends/vllm
+              resources:
+                limits:
+                  nvidia.com/gpu: "1"
+              command: ["python3", "-m", "dynamo.vllm"]
+              args:
+                - --model
+                - Qwen/Qwen3-0.6B
+                - --max-model-len
+                - "4096"
+                - --gpu-memory-utilization
+                - "0.75"
+                - --enforce-eager
+                - --tensor-parallel-size
+                - "2"
+                - --disaggregation-mode
+                - prefill
+                - --kv-transfer-config
+                - '{"kv_connector":"NixlConnector","kv_role":"kv_both","engine_id":"vllm-disagg-prefill-engine"}'
+    - name: decode
+      type: decode
+      replicas: 1
+      multinode:
+        nodeCount: 2
+      sharedMemorySize: 16Gi
+      podTemplate:
+        spec:
+          tolerations:
+            - key: g5-gpu
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+          securityContext:
+            fsGroup: 1001330000
+            runAsNonRoot: true
+          containers:
+            - name: main
+              image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.2
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: USER
+                  value: dynamo
+                - name: TORCHINDUCTOR_CACHE_DIR
+                  value: /tmp/torchinductor
+                - name: HF_HOME
+                  value: /tmp/huggingface
+                - name: NCCL_SOCKET_IFNAME
+                  value: eth0
+                - name: NCCL_IB_DISABLE
+                  value: "1"
+              workingDir: /workspace/examples/backends/vllm
+              resources:
+                limits:
+                  nvidia.com/gpu: "1"
+              command: ["python3", "-m", "dynamo.vllm"]
+              args:
+                - --model
+                - Qwen/Qwen3-0.6B
+                - --max-model-len
+                - "4096"
+                - --gpu-memory-utilization
+                - "0.75"
+                - --enforce-eager
+                - --tensor-parallel-size
+                - "2"
+                - --disaggregation-mode
+                - decode
+                - --kv-transfer-config
+                - '{"kv_connector":"NixlConnector","kv_role":"kv_both","engine_id":"vllm-disagg-decode-engine"}'

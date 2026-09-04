@@ -1,0 +1,5 @@
+# Downloaded Helm release archives are reproducible deployment dependencies,
+# not source artifacts for this repository.
+*.tgz
+*.tar.gz
+*.zip
