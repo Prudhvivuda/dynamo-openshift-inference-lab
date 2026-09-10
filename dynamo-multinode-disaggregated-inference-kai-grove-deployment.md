@@ -191,6 +191,132 @@ granted. The manifest sets `runAsNonRoot: true`, and includes `USER=dynamo`,
 `TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor`. These avoid image assumptions
 about a fixed passwd entry while OpenShift assigns the runtime UID.
 
+### Model download and Hugging Face authentication
+
+The workers use the model identifier `Qwen/Qwen3-0.6B`. vLLM resolves that
+identifier through the Hugging Face Hub and downloads the model on first
+startup unless the weights are already present in the image or cache.
+
+This repository's direct DGD uses a public model, so the validated deployment
+did not create an `hf-token-secret` or inject `HF_TOKEN`. The `HF_HOME` setting
+is still important: it moves the model/cache path to `/tmp`, which is writable
+under OpenShift's namespace-assigned UID. It is a cache-location workaround,
+not an authentication setting.
+
+For a gated or private Hugging Face model, create the token secret in the same
+workload namespace and add it to each model-serving container. Do not commit
+the token or place it directly in the YAML:
+
+```bash
+export HF_TOKEN='<token-from-your-secret-store>'
+oc create secret generic hf-token-secret \
+  --from-literal=HF_TOKEN="$HF_TOKEN" \
+  -n dynamo-multinode-pvuda
+```
+
+Then add this to the relevant `podTemplate.spec.containers[].env` list in the
+DGD (or use `envFrom` if the generated deployment requires that shape):
+
+```yaml
+- name: HF_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: hf-token-secret
+      key: HF_TOKEN
+```
+
+The single-node DGDR procedure documented by the other engineer includes this
+secret because its profiler/generated DGD path expects it and propagates it
+into the generated worker spec. That is specific to that workflow; it is not a
+requirement of this direct-DGD deployment when using the public Qwen model.
+
+## How Dynamo, Grove, and KAI fit together
+
+The DGD is the user-facing declaration of the inference graph. Grove and KAI
+are infrastructure layers that the Dynamo operator uses to realize and schedule
+that graph; they are not additional inference components.
+
+```text
+DynamoGraphDeployment (DGD)
+  └─ Declarative inference graph
+     Defines frontend, prefill/decode workers, model, GPU limits,
+     tensor parallelism, replicas, and multinode.nodeCount
+        │
+        ▼
+Dynamo Operator
+  └─ Reconciles the DGD and creates Dynamo component resources,
+     Services, and Grove orchestration resources
+        │
+        ▼
+Grove PodCliqueSet
+  └─ Complete coordinated workload
+     ├─ Frontend PodClique
+     ├─ Prefill PodCliqueScalingGroup
+     │   ├─ Leader PodClique
+     │   └─ Worker PodClique
+     └─ Decode PodCliqueScalingGroup
+         ├─ Leader PodClique
+         └─ Worker PodClique
+        │
+        ▼
+Grove PodGang
+  └─ Represents the pods that must be scheduled together
+        │
+        ▼
+KAI Scheduler
+  └─ Places the gang on available GPU nodes using the selected queue
+```
+
+The responsibilities are separate:
+
+| Component | Responsibility |
+| --- | --- |
+| `DynamoGraphDeployment` | Declares the desired inference graph and runtime topology |
+| Dynamo Operator | Converts the DGD into Dynamo, Kubernetes, and Grove resources |
+| Grove | Manages distributed pod roles, leader/worker relationships, lifecycle, and scaling |
+| `PodCliqueSet` | Grove's top-level resource for one coordinated workload |
+| `PodClique` | One homogeneous role, such as frontend, prefill leader, or decode worker |
+| `PodCliqueScalingGroup` | Groups related cliques that scale together |
+| `PodGang` | Scheduling unit containing pods that must be placed together |
+| KAI Scheduler | Finds GPU capacity and gang-schedules the workload using the selected queue |
+
+For this deployment, the DGD contains one frontend, a two-node prefill group,
+and a two-node decode group. The operator generated one Grove `PodCliqueSet`,
+two `PodCliqueScalingGroup` resources, five `PodClique` resources, and five
+running pods:
+
+```text
+DGD: vllm-disagg-multinode
+├── Frontend
+├── Prefill: nodeCount=2
+│   ├── prefill leader
+│   └── prefill worker
+└── Decode: nodeCount=2
+    ├── decode leader
+    └── decode worker
+```
+
+The KAI queue is selected by the DGD annotation:
+
+```yaml
+metadata:
+  annotations:
+    nvidia.com/kai-scheduler-queue: dynamo
+```
+
+The inference path and scheduling path are different:
+
+```text
+Inference:  Client -> Dynamo Frontend -> Prefill Workers -> Decode Workers
+Scheduling:  Dynamo Operator -> Grove PodGang -> KAI Scheduler -> GPU Nodes
+```
+
+Grove is needed to model and coordinate the distributed worker group. KAI is
+used to gang-schedule the group so tensor-parallel workers do not start
+partially when the required GPUs are unavailable. For multi-node Dynamo, the
+documented alternative is LeaderWorkerSet plus Volcano; a multi-node DGD needs
+one of these orchestration paths.
+
 ## 3. Deploy the direct DynamoGraphDeployment
 
 DGDR profiling was intentionally not used. Its profiling jobs hardcode UID/GID
